@@ -1,0 +1,89 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String
+  name      String
+  role      String   @default("RECEPTIONIST")
+  createdAt DateTime @default(now())
+
+  doctor Doctor?
+}
+
+// SCHEMA BUG: No unique constraint on (doctorId, appointmentDate).
+// This permits double-booking the same physician at the exact same time slot.
+// A proper constraint would be: @@unique([doctorId, appointmentDate])
+model Doctor {
+  id              String   @id @default(uuid())
+  userId          String?  @unique
+  user            User?    @relation(fields: [userId], references: [id])
+  name            String
+  specialization  String
+  department      String
+  consultationFee Float
+  experience      Int
+  availableFrom   String   @default("09:00")
+  availableTo     String   @default("17:00")
+  createdAt       DateTime @default(now())
+
+  // MISSING INDEX: No index on department or specialization.
+  // Filtering/searching by these columns does full table scans at scale.
+  appointments Appointment[]
+  queueTokens  QueueToken[]
+}
+
+model Patient {
+  id             String   @id @default(uuid())
+  name           String
+  email          String?
+  phoneNumber    String
+  age            Int
+  gender         String
+  medicalHistory String?  // Nullable — intentional crash trigger for frontend bug
+  createdAt      DateTime @default(now())
+
+  appointments Appointment[]
+  queueTokens  QueueToken[]
+}
+
+model Appointment {
+  id              String            @id @default(uuid())
+  patientId       String
+  patient         Patient           @relation(fields: [patientId], references: [id])
+  doctorId        String
+  doctor          Doctor            @relation(fields: [doctorId], references: [id])
+  appointmentDate DateTime
+  reason          String            @default("")
+  status          String            @default("PENDING")
+  createdAt       DateTime          @default(now())
+
+  // MISSING INDEX: No index on (doctorId, status) — important for worklist queries.
+  // MISSING INDEX: No index on patientId foreign key.
+  queueTokens QueueToken[]
+}
+
+model QueueToken {
+  id            String      @id @default(uuid())
+  tokenNumber   Int
+  patientId     String
+  patient       Patient     @relation(fields: [patientId], references: [id])
+  doctorId      String
+  doctor        Doctor      @relation(fields: [doctorId], references: [id])
+  appointmentId String?
+  appointment   Appointment? @relation(fields: [appointmentId], references: [id])
+  status        String      @default("WAITING")
+  createdAt     DateTime    @default(now())
+
+  // MISSING INDEX: No index on (doctorId, createdAt) — used in daily token aggregation.
+  // MISSING INDEX: No index on status — used in frequent status filter queries.
+  // SCHEMA BUG: No unique constraint on (doctorId, tokenNumber, date) —
+  // race condition in checkin route can produce duplicate token numbers for the same doctor+day.
+}
